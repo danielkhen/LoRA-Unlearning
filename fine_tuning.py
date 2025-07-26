@@ -1,9 +1,9 @@
 import re
 
 from peft import LoraConfig, get_peft_model
-from torch.nn import Linear, Embedding, Conv2d, Conv1d
+from torch.nn import Linear, Embedding, Conv2d, Conv1d, ConvTranspose2d
 
-LORA_LAYERS = [Linear, Embedding, Conv2d, Conv1d]
+LORA_LAYERS = [Linear, Embedding, Conv2d, Conv1d, ConvTranspose2d]
 
 def get_lora_model(model, rank, target_regexes):
     # Find all modules whose name matches any regex in target_regexes and whose type is in LORA_LAYERS
