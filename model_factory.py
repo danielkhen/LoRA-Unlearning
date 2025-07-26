@@ -3,9 +3,12 @@ import timm
 from timm.models.vision_transformer import VisionTransformer
 from torch.nn import LayerNorm
 from models.wideresnet import WideResNet
+from models.unet import ContextUnet
 
 def create_model(model_name, num_classes, input_size=32):
     match model_name:
+        case 'context-unet':
+            model = ContextUnet(3, input_size, input_size, 16, num_classes, 1)
         case 'wrn-40-4':
             model = WideResNet(40, num_classes, 4)
         case 'wrn-16-4':
