@@ -1,161 +1,153 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
 
-class SelfAttention(nn.Module):
-    def __init__(self, channels, size):
-        super(SelfAttention, self).__init__()
-        self.channels = channels
-        self.size = size
-        self.mha = nn.MultiheadAttention(channels, 4, batch_first=True)
-        self.ln = nn.LayerNorm([channels])
-        self.ff_self = nn.Sequential(
-            nn.LayerNorm([channels]),
-            nn.Linear(channels, channels),
-            nn.GELU(),
-            nn.Linear(channels, channels),
+
+
+class ResidualConvBlock(nn.Module):
+    """Convolutional Residual Block"""
+    def __init__(self, in_channels, out_channels, is_res=False):
+        super(ResidualConvBlock, self).__init__()
+        self.is_res = is_res
+        self.same_channels = in_channels == out_channels
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU()
         )
-
-    def forward(self, x):
-        x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
-        x_ln = self.ln(x)
-        attention_value, _ = self.mha(x_ln, x_ln, x_ln)
-        attention_value = attention_value + x
-        attention_value = self.ff_self(attention_value) + attention_value
-        return attention_value.swapaxes(2, 1).view(-1, self.channels, self.size, self.size)
-
-
-class DoubleConv(nn.Module):
-    def __init__(self, in_channels, out_channels, mid_channels=None, residual=False):
-        super().__init__()
-        self.residual = residual
-        if not mid_channels:
-            mid_channels = out_channels
-        self.double_conv = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(1, mid_channels),
-            nn.GELU(),
-            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.GroupNorm(1, out_channels),
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, 3, 1, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU()
         )
-
+        
+        self.handle_channel = None
+        if self.is_res and not self.same_channels:
+            self.handle_channel = nn.Conv2d(in_channels, out_channels, 1, 1, 0)
+        
     def forward(self, x):
-        if self.residual:
-            return F.gelu(x + self.double_conv(x))
+        x_out = self.conv2(self.conv1(x))
+        if not self.is_res:
+            return x_out
         else:
-            return self.double_conv(x)
+            if self.handle_channel:
+                x_out = x_out + self.handle_channel(x)
+            else:
+                x_out = x_out + x
+            return x_out / 1.414 # normalize
 
 
-class Down(nn.Module):
-    def __init__(self, in_channels, out_channels, emb_dim=256):
-        super().__init__()
-        self.maxpool_conv = nn.Sequential(
-            nn.MaxPool2d(2),
-            DoubleConv(in_channels, in_channels, residual=True),
-            DoubleConv(in_channels, out_channels),
-        )
+class UNetDown(nn.Module):
+    """UNet downward block (i.e., contracting block)"""
+    def __init__(self, in_channels, out_channels):
+        super(UNetDown, self).__init__()
+        layers = [ResidualConvBlock(in_channels, out_channels, True), # use skip-connection
+                  ResidualConvBlock(out_channels, out_channels),
+                  nn.MaxPool2d(2)]
+        self.model = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.model(x)
 
-        self.emb_layer = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(
-                emb_dim,
-                out_channels
+
+class UNetUp(nn.Module):
+    """UNet upward block (i.e., expanding block)"""
+    def __init__(self, in_channels, out_channels):
+        super(UNetUp, self).__init__()
+        layers = [
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            ResidualConvBlock(out_channels, out_channels, True), # use residual-connection
+            ResidualConvBlock(out_channels, out_channels)
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x, x_skip):
+        return self.model(torch.cat([x, x_skip], dim=1))
+
+
+class EmbedFC(nn.Module):
+    """Fully Connected Embedding Layer"""
+    def __init__(self, input_dim, hidden_dim):
+        super(EmbedFC, self).__init__()
+        self.input_dim = input_dim
+        layers = [
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        ]
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = x.reshape(-1, self.input_dim)
+        return self.model(x)[:, :, None, None]
+
+
+class ContextUnet(nn.Module):
+    """Context UNet model
+    Args:
+        in_channels (int): Number of channels in the input image
+        height (int): Height of the input image
+        width (int): Width of the input image
+        n_feat (int): Number of initial features i.e., hidden channels to which
+            the input image be transformed
+        n_cfeat (int): Number of context features i.e., class categories
+        n_downs (int): Number of down (and up) blocks of UNet. Default: 2
+    """
+    def __init__(self, in_channels, height, width, n_feat, n_cfeat, n_downs=2):
+        super(ContextUnet, self).__init__()
+        self.in_channels = in_channels
+        self.height = height
+        self.width = width
+        self.n_feat = n_feat
+        self.n_cfeat = n_cfeat
+        self.n_downs = n_downs
+
+        # Define initial convolution
+        self.init_conv = ResidualConvBlock(in_channels, n_feat, True)
+        
+        # Define downward unet blocks
+        self.down_blocks = nn.ModuleList()
+        for i in range(n_downs):
+            self.down_blocks.append(UNetDown(2**i*n_feat, 2**(i+1)*n_feat))
+        
+        # Define at the center layers
+        self.to_vec = nn.Sequential(
+            nn.AvgPool2d((height//2**len(self.down_blocks), width//2**len(self.down_blocks))), 
+            nn.GELU())
+        self.up0 = nn.Sequential(
+            nn.Upsample(
+                size=(height // 2**len(self.down_blocks), width // 2**len(self.down_blocks)),
+                mode="bilinear", align_corners=True
             ),
+            nn.Conv2d(2**n_downs * n_feat, 2**n_downs * n_feat, kernel_size=3, padding=1),
+            nn.GroupNorm(8, 2**n_downs*n_feat),
+            nn.GELU()
+        )
+        
+        # Define upward unet blocks
+        self.up_blocks = nn.ModuleList()
+        for i in range(n_downs, 0, -1):
+            self.up_blocks.append(UNetUp(2**(i+1)*n_feat, 2**(i-1)*n_feat))
+
+        # Define final convolutional layer
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(2*n_feat, n_feat, 3, 1, 1),
+            nn.GroupNorm(8, n_feat),
+            nn.GELU(),
+            nn.Conv2d(n_feat, in_channels, 1, 1)
         )
 
-    def forward(self, x, t):
-        x = self.maxpool_conv(x)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        return x + emb
+        # Define time & context embedding blocks 
+        self.timeembs = nn.ModuleList([EmbedFC(1, 2**i*n_feat) for i in range(n_downs, 0, -1)])
+        self.contextembs = nn.ModuleList([EmbedFC(n_cfeat, 2**i*n_feat) for i in range(n_downs, 0, -1)])
 
-
-class Up(nn.Module):
-    def __init__(self, in_channels, out_channels, emb_dim=256):
-        super().__init__()
-
-        self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
-        self.conv = nn.Sequential(
-            DoubleConv(in_channels, in_channels, residual=True),
-            DoubleConv(in_channels, out_channels, in_channels // 2),
-        )
-
-        self.emb_layer = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(
-                emb_dim,
-                out_channels
-            ),
-        )
-
-    def forward(self, x, skip_x, t):
-        x = self.up(x)
-        x = torch.cat([skip_x, x], dim=1)
-        x = self.conv(x)
-        emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
-        return x + emb
-
-class UNet(nn.Module):
-    def __init__(self, c_in=3, c_out=3, time_dim=256, num_classes=None, device="cuda"):
-        super().__init__()
-        self.device = device
-        self.time_dim = time_dim
-        self.inc = DoubleConv(c_in, 64)
-        self.down1 = Down(64, 128)
-        self.sa1 = SelfAttention(128, 32)
-        self.down2 = Down(128, 256)
-        self.sa2 = SelfAttention(256, 16)
-        self.down3 = Down(256, 256)
-        self.sa3 = SelfAttention(256, 8)
-
-        self.bot1 = DoubleConv(256, 512)
-        self.bot2 = DoubleConv(512, 512)
-        self.bot3 = DoubleConv(512, 256)
-
-        self.up1 = Up(512, 128)
-        self.sa4 = SelfAttention(128, 16)
-        self.up2 = Up(256, 64)
-        self.sa5 = SelfAttention(64, 32)
-        self.up3 = Up(128, 64)
-        self.sa6 = SelfAttention(64, 64)
-        self.outc = nn.Conv2d(64, c_out, kernel_size=1)
-
-        if num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_dim)
-
-    def pos_encoding(self, t, channels):
-        inv_freq = 1.0 / (
-            10000
-            ** (torch.arange(0, channels, 2, device=self.device).float() / channels)
-        )
-        pos_enc_a = torch.sin(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc_b = torch.cos(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc = torch.cat([pos_enc_a, pos_enc_b], dim=-1)
-        return pos_enc
-
-    def forward(self, x, t, y):
-        t = t.unsqueeze(-1).type(torch.float)
-        t = self.pos_encoding(t, self.time_dim)
-
-        if y is not None:
-            t = t + self.label_emb(y)
-
-        x1 = self.inc(x)
-        x2 = self.down1(x1, t)
-        x2 = self.sa1(x2)
-        x3 = self.down2(x2, t)
-        x3 = self.sa2(x3)
-        x4 = self.down3(x3, t)
-        x4 = self.sa3(x4)
-
-        x4 = self.bot1(x4)
-        x4 = self.bot2(x4)
-        x4 = self.bot3(x4)
-
-        x = self.up1(x4, x3, t)
-        x = self.sa4(x)
-        x = self.up2(x, x2, t)
-        x = self.sa5(x)
-        x = self.up3(x, x1, t)
-        x = self.sa6(x)
-        output = self.outc(x)
-        return output
+    def forward(self, x, t, c):
+        x = self.init_conv(x)
+        downs = []
+        for i, down_block in enumerate(self.down_blocks):
+            if i == 0: downs.append(down_block(x))
+            else: downs.append(down_block(downs[-1]))
+        up = self.up0(self.to_vec(downs[-1]))
+        for up_block, down, contextemb, timeemb in zip(self.up_blocks, downs[::-1], self.contextembs, self.timeembs):
+            up = up_block(up*contextemb(c) + timeemb(t), down)
+        return self.final_conv(torch.cat([up, x], axis=1))
