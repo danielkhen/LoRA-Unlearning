@@ -1,7 +1,20 @@
 import torch
 from torch import nn
 
+class ConvTranspose2d1x1(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size):
+        super().__init__()
+        self.kernel_size = kernel_size
+        self.out_channels = out_channels
+        self.linear = nn.Linear(in_channels, out_channels * kernel_size[0] * kernel_size[1])
 
+    def forward(self, x):
+        # x shape: [B, C_in, 1, 1]
+        B = x.size(0)
+        x = x.view(B, -1)  # [B, C_in]
+        x = self.linear(x)  # [B, C_out * k * k]
+        x = x.view(B, self.out_channels, self.kernel_size[0], self.kernel_size[1])  # [B, C_out, k, k]
+        return x
 
 class ResidualConvBlock(nn.Module):
     """Convolutional Residual Block"""
@@ -115,11 +128,10 @@ class ContextUnet(nn.Module):
             nn.AvgPool2d((height//2**len(self.down_blocks), width//2**len(self.down_blocks))), 
             nn.GELU())
         self.up0 = nn.Sequential(
-            nn.Upsample(
-                size=(height // 2**len(self.down_blocks), width // 2**len(self.down_blocks)),
-                mode="bilinear", align_corners=True
-            ),
-            nn.Conv2d(2**n_downs * n_feat, 2**n_downs * n_feat, kernel_size=3, padding=1),
+            ConvTranspose2d1x1(
+                2**n_downs*n_feat, 
+                2**n_downs*n_feat, 
+                (height//2**len(self.down_blocks), width//2**len(self.down_blocks))),
             nn.GroupNorm(8, 2**n_downs*n_feat),
             nn.GELU()
         )
@@ -145,9 +157,14 @@ class ContextUnet(nn.Module):
         x = self.init_conv(x)
         downs = []
         for i, down_block in enumerate(self.down_blocks):
-            if i == 0: downs.append(down_block(x))
-            else: downs.append(down_block(downs[-1]))
+            if i == 0: 
+                downs.append(down_block(x))
+            else: 
+                downs.append(down_block(downs[-1]))
+
         up = self.up0(self.to_vec(downs[-1]))
+
         for up_block, down, contextemb, timeemb in zip(self.up_blocks, downs[::-1], self.contextembs, self.timeembs):
             up = up_block(up*contextemb(c) + timeemb(t), down)
+
         return self.final_conv(torch.cat([up, x], axis=1))

@@ -30,3 +30,38 @@ def test(model, test_loader, criterion):
     model.train()
 
     return avg_loss, accuracy
+
+
+def sample(model, num_classes, samples_per_class, input_size, timesteps, a_t, b_t, ab_t):
+    # Set model to evaluation mode
+    model.eval()
+
+    # Start from pure noise
+    labels = torch.nn.functional.one_hot(torch.arange(0, num_classes, dtype=torch.long).repeat_interleave(samples_per_class))
+    labels = torch.cat((labels, torch.zeros(samples_per_class, num_classes))).to('cuda');
+    x = torch.randn(labels.shape[0], 1, input_size, input_size).to('cuda')
+
+    for t in reversed(range(1, timesteps + 1)):
+        t_tensor = torch.full((labels.shape[0],), t, device='cuda', dtype=torch.long)
+        t_norm = t_tensor / timesteps
+
+        # Predict noise
+        pred_noise = model(x, t_norm, labels)
+
+        # Compute coefficients
+        beta_t = b_t[t].view(-1, 1, 1, 1)
+        alpha_t = a_t[t].view(-1, 1, 1, 1)
+        ab_t_ = ab_t[t].view(-1, 1, 1, 1)
+
+        # DDPM sampling step
+        if t > 1:
+            noise = torch.randn_like(x)
+        else:
+            noise = torch.zeros_like(x)
+        x = (1 / alpha_t.sqrt()) * (x - (beta_t / (1 - ab_t_).sqrt()) * pred_noise) + beta_t.sqrt() * noise
+
+    # Convert to numpy and denormalize for visualization
+    samples = x.clamp(-1, 1).cpu().numpy()
+    samples = (samples * 0.5) + 0.5  # if your data was normalized to [-1, 1]
+
+    return samples

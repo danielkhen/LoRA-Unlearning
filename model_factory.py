@@ -4,9 +4,17 @@ from timm.models.vision_transformer import VisionTransformer
 from torch.nn import LayerNorm
 from models.wideresnet import WideResNet
 from models.unet import ContextUnet
+from models.salun import Conditional_Model
 
 def create_model(model_name, num_classes, input_size=32):
     match model_name:
+        case 'salun-ddpm':
+            model = Conditional_Model(
+                in_channels=3,
+                ch=128,
+                out_ch=3,
+                n_classes=num_classes,
+            )
         case 'context-unet':
             model = ContextUnet(3, input_size, input_size, 64, num_classes, 4)
         case 'wrn-40-4':

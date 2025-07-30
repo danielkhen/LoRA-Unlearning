@@ -1,5 +1,37 @@
+# PyTorch with CUDA support
+# Choose one of the following PyTorch versions based on your CUDA version:
+
+# For CUDA 12.1
+# torch==2.1.0+cu121
+# torchvision==0.16.0+cu121
+
+# For CUDA 12.4
+# torch==2.1.0+cu124
+# torchvision==0.16.0+cu124
+
+# For CUDA 12.8 (current)
 torch==2.7.1+cu128
 torchvision==0.22.1+cu128
+
+# For CUDA 11.8 (older but stable)
+# torch==2.1.0+cu118
+# torchvision==0.16.0+cu118
+
+# Core dependencies
 timm
 peft
 pyhessian
+
+# Additional dependencies for diffusion models
+einops
+numpy
+matplotlib
+tqdm
+Pillow
+
+# Optional: for Jupyter notebooks
+jupyter
+ipykernel
+
+# Optional: for better performance
+ninja
