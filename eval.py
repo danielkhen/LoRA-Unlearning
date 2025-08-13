@@ -65,3 +65,41 @@ def sample(model, num_classes, samples_per_class, input_size, timesteps, a_t, b_
     samples = (samples * 0.5) + 0.5  # if your data was normalized to [-1, 1]
 
     return samples
+
+def sample_salun(model, num_classes, samples_per_class, betas, timesteps, input_size, cond_scale=3.0):
+    # Set model to evaluation mode
+    model.eval()
+
+    # Start from pure noise
+    labels = torch.arange(0, num_classes, dtype=torch.long).repeat_interleave(samples_per_class).to('cuda')
+    x = torch.randn(labels.shape[0], 3, input_size, input_size).to('cuda')
+
+    alphas = 1.0 - betas
+    alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+    for t in reversed(range(timesteps)):
+        t_tensor = torch.full((labels.shape[0],), t, device='cuda', dtype=torch.long)
+
+        # Predict noise
+        pred_noise = model(x, t_tensor, labels, cond_scale=cond_scale, mode='test')
+
+        # Compute coefficients for DDPM sampling
+        beta_t = betas[t].view(-1, 1, 1, 1)
+        alpha_t = alphas[t].view(-1, 1, 1, 1)
+        ab_t_ = alphas_cumprod[t].view(-1, 1, 1, 1)
+        
+        # DDPM sampling step
+        if t > 0:
+            noise = torch.randn_like(x)
+        else:
+            noise = torch.zeros_like(x)
+        
+        # Update x using the predicted noise
+        x = (1 / alpha_t.sqrt()) * (x - (beta_t / (1 - ab_t_).sqrt()) * pred_noise) + beta_t.sqrt() * noise
+
+    # Convert to numpy and denormalize for visualization
+    samples = x.clamp(-1, 1).cpu().numpy()
+    samples = (samples * 0.5) + 0.5  # if your data was normalized to [-1, 1]
+
+    return samples
+
