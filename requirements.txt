@@ -6,8 +6,8 @@
 # torchvision==0.16.0+cu121
 
 # For CUDA 12.4
-torch==2.1.0+cu124
-torchvision==0.16.0+cu124
+# torch==2.1.0+cu124
+# torchvision==0.16.0+cu124
 
 # For CUDA 12.8 (current)
 # torch==2.7.1+cu128
