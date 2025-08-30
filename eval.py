@@ -66,12 +66,11 @@ def sample(model, num_classes, samples_per_class, input_size, timesteps, a_t, b_
 
     return samples
 
-def sample_salun(model, num_classes, samples_per_class, betas, timesteps, input_size, cond_scale=3.0):
+def sample_salun(model, labels, betas, timesteps, input_size, cond_scale=3.0):
     # Set model to evaluation mode
     model.eval()
 
     # Start from pure noise
-    labels = torch.arange(0, num_classes, dtype=torch.long).repeat_interleave(samples_per_class).to('cuda')
     x = torch.randn(labels.shape[0], 3, input_size, input_size).to('cuda')
 
     alphas = 1.0 - betas

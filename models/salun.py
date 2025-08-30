@@ -11,7 +11,7 @@ def prob_mask_like(shape, prob, device):
     elif prob == 0:
         return torch.zeros(shape, device=device, dtype=torch.bool)
     else:
-        return torch.zeros(shape, device=device).float().uniform_(0, 1) < prob
+        return torch.rand(shape, device=device) < prob
 
 
 def get_timestep_embedding(timesteps, embedding_dim):
